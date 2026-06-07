@@ -3,7 +3,6 @@ import os
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import statsbombpy as sb
 from tqdm import tqdm
 
 OPEN_DATA_PATH = "../open-data/data"
@@ -96,22 +95,52 @@ def _extract_gk_info(freeze_frame) -> dict:
     return {'gk_location': None}
 
 
+KP_COLUMNS = ['kp_location', 'kp_length', 'kp_angle',
+              'kp_cross', 'kp_through_ball', 'kp_cut_back']
+
+
+def _attach_key_pass_info(shots: pd.DataFrame, events: pd.DataFrame) -> pd.DataFrame:
+    for col in KP_COLUMNS:
+        shots[col] = None
+
+    if 'type.name' not in events.columns:
+        return shots
+
+    passes = events[events['type.name'] == 'Pass']
+    if len(passes) == 0:
+        return shots
+    passes = passes.set_index('id')
+
+    def lookup(col):
+        if col in passes.columns:
+            return passes[col]
+        return pd.Series(dtype=object)
+
+    kp_ids = shots['shot.key_pass_id']
+    shots['kp_location']     = kp_ids.map(lookup('location'))
+    shots['kp_length']       = kp_ids.map(lookup('pass.length'))
+    shots['kp_angle']        = kp_ids.map(lookup('pass.angle'))
+    shots['kp_cross']        = (kp_ids.map(lookup('pass.cross')) == True)
+    shots['kp_through_ball'] = (kp_ids.map(lookup('pass.through_ball')) == True)
+    shots['kp_cut_back']     = (kp_ids.map(lookup('pass.cut_back')) == True)
+    return shots
+
+
 def load_shot_events(match_id: int) -> pd.DataFrame:
     events = load_all_events(match_id)
     if 'type.name' not in events.columns:
-        return pd.DataFrame(columns=SHOT_EVENT_COLUMNS + ['gk_location'])
+        return pd.DataFrame(columns=SHOT_EVENT_COLUMNS + ['gk_location'] + KP_COLUMNS)
 
     shots = events[events['type.name'] == 'Shot'].copy()
     shots = shots.reindex(columns=SHOT_EVENT_COLUMNS)
 
     for col in ('under_pressure', 'shot.first_time', 'shot.follows_dribble'):
-        if col in shots.columns:
-            shots[col] = shots[col].where(shots[col].notna(), other=False).astype(bool)
-        else:
-            shots[col] = False
+        shots[col] = (shots.get(col) == True)
 
     gk_info = shots['shot.freeze_frame'].apply(_extract_gk_info)
     shots['gk_location'] = gk_info.apply(lambda d: d['gk_location'])
+
+    shots = _attach_key_pass_info(shots, events)
 
     return shots
 
@@ -129,9 +158,21 @@ def save_all_shots(OUTPUT_PATH=OUTPUT_PATH) -> None:
     print("Loading all shot events…")
     shots = load_all_shots()
 
-    print(f"\nTotal shots: {len(shots):,}")
+    print(f"Raw shots loaded: {len(shots):,}")
+
+    # Drops penalties
+    n_pens = shots['shot.type.name'].eq('Penalty').sum()
+    shots = shots[shots['shot.type.name'] != 'Penalty'].copy()
+    print(f"Dropped {n_pens:,} penalty shots")
+
+    # Drops the ~99 open-play / FK shots with no freeze-frame GK position - major features missing.
+    n_missing_gk = shots['gk_location'].isna().sum()
+    shots = shots[shots['gk_location'].notna()].copy()
+    print(f"Dropped {n_missing_gk:,} shots with missing GK location")
+
+    print(f"\nFinal dataset: {len(shots):,} shots")
     print(f"Goals: {shots['shot.outcome.name'].eq('Goal').sum():,} ({shots['shot.outcome.name'].eq('Goal').mean():.1%})")
-    print(f"GK location available: {shots['gk_location'].notna().sum():,} ({shots['gk_location'].notna().mean():.1%})")
+    print(f"With key pass: {shots['kp_location'].notna().sum():,} ({shots['kp_location'].notna().mean():.1%})")
 
     shots.to_csv(OUTPUT_PATH, index=False)
     print(f"\nSaved to {OUTPUT_PATH}")
