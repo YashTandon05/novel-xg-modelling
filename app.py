@@ -73,6 +73,8 @@ def build_raw_row(inp: ShotInput) -> pd.DataFrame:
         "gk_location": [inp.gk],
         # Tier 4 — other players
         "shot.freeze_frame": [freeze_frame],
+        # Required by add_label() inside build_features — value doesn't matter for prediction
+        "shot.outcome.name": ["Saved"],
         # Tier 5 — key pass (none in this simplified demo)
         "kp_location": [None],
         "kp_length": [0.0],
